@@ -1,0 +1,13 @@
+# Secrets - never commit
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Local data and run logs
+*.csv
+*.jsonl
+logs/
+history/

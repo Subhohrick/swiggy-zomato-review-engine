@@ -1,0 +1,135 @@
+{
+  "name": "3 – Weekly report",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "ecacd06c-8615-4fe2-9064-0149c39cc39e",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH food AS (\n  SELECT id, brand FROM reviews\n  WHERE analyzed AND service = 'food' AND review_date >= now() - interval '7 days'\n),\ntotals AS (SELECT brand, count(*) AS n FROM food GROUP BY brand),\nmentions AS (\n  SELECT ri.label, f.brand, count(DISTINCT ri.review_id) AS c\n  FROM review_issues ri JOIN food f ON f.id = ri.review_id\n  GROUP BY ri.label, f.brand\n),\npivot AS (\n  SELECT m.label,\n    round(max(1000.0 * m.c / t.n) FILTER (WHERE m.brand = 'swiggy'), 0) AS swiggy_per_1k,\n    round(max(1000.0 * m.c / t.n) FILTER (WHERE m.brand = 'zomato'), 0) AS zomato_per_1k,\n    sum(m.c) AS total_mentions\n  FROM mentions m JOIN totals t USING (brand)\n  GROUP BY m.label\n)\nSELECT label, swiggy_per_1k, zomato_per_1k, total_mentions,\n  round(swiggy_per_1k / NULLIF(zomato_per_1k, 0), 2) AS gap,\n  CASE\n    WHEN zomato_per_1k IS NULL THEN 'Swiggy only'\n    WHEN swiggy_per_1k IS NULL THEN 'Zomato only'\n    WHEN swiggy_per_1k / zomato_per_1k > 1.5  THEN 'Swiggy worse'\n    WHEN swiggy_per_1k / zomato_per_1k < 0.67 THEN 'Swiggy better'\n    ELSE 'Both struggling'\n  END AS verdict,\n  (SELECT n FROM totals WHERE brand = 'swiggy') AS swiggy_n,\n  (SELECT n FROM totals WHERE brand = 'zomato') AS zomato_n\nFROM pivot\nWHERE total_mentions >= 3\nORDER BY total_mentions DESC\nLIMIT 12;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        224,
+        0
+      ],
+      "id": "b4e3a448-2f64-4586-9ed1-81620326719b",
+      "name": "Weekly comparison",
+      "credentials": {
+        "postgres": {
+          "id": "wFyJu4omcBwpDizP",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json);\nconst swiggyN = rows[0]?.swiggy_n ?? 0;\nconst zomatoN = rows[0]?.zomato_n ?? 0;\n\nconst color = v => v === 'Swiggy worse' ? '#c0392b' : v === 'Swiggy better' ? '#27ae60' : '#555';\n\nconst tr = rows.map(r => `<tr>\n  <td>${r.label}</td>\n  <td align=\"center\">${r.swiggy_per_1k ?? '-'}</td>\n  <td align=\"center\">${r.zomato_per_1k ?? '-'}</td>\n  <td align=\"center\">${r.gap ?? '-'}</td>\n  <td style=\"color:${color(r.verdict)};font-weight:bold\">${r.verdict}</td></tr>`).join('');\n\nreturn [{ json: {\n  subject: `Swiggy vs Zomato: customer pain report (${new Date().toDateString()})`,\n  html: `<h2>Top complaints, last 7 days</h2>\n    <p><b>Based on ${swiggyN} Swiggy and ${zomatoN} Zomato food reviews.</b><br>\n    Mentions per 1,000 food reviews. Gap = Swiggy ÷ Zomato. Only issues with 3+ mentions.</p>\n    <table border=\"1\" cellpadding=\"6\" style=\"border-collapse:collapse;font-family:Arial\">\n    <tr style=\"background:#f2f2f2\"><th>Issue</th><th>Swiggy</th><th>Zomato</th><th>Gap</th><th>Verdict</th></tr>\n    ${tr}</table>\n    <p style=\"color:#888;font-size:12px\">Small samples: a gap based on only a few reviews per brand is directional, not conclusive.</p>`,\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "id": "7481a808-b8d2-4be8-a928-e83d66a51632",
+      "name": "Format digest"
+    },
+    {
+      "parameters": {
+        "fromEmail": "subhahrick7748@gmail.com",
+        "toEmail": "subhahrick7748@gmail.com",
+        "subject": "={{ $json.subject }}",
+        "html": "={{ $json.html }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        672,
+        0
+      ],
+      "id": "f7a0b703-70ab-4d7b-84a1-dfd22609ea94",
+      "name": "Send an Email",
+      "webhookId": "a72b1657-d53d-4925-8f56-b85b4b03ad11",
+      "credentials": {
+        "smtp": {
+          "id": "vT8MwkWx8G5tLz6V",
+          "name": "SMTP account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Weekly comparison",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Weekly comparison": {
+      "main": [
+        [
+          {
+            "node": "Format digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format digest": {
+      "main": [
+        [
+          {
+            "node": "Send an Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "4f7af73b-447f-42bb-940f-39bb58f83bd8",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "fdf8db9e9f47500720a575d7beac3dd37ca18be1bc773535394268b73a15d089"
+  },
+  "nodeGroups": [],
+  "id": "W0Jg9p1BDEfp5zOq",
+  "tags": []
+}

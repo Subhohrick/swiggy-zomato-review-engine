@@ -1,0 +1,255 @@
+{
+  "name": "2 – Classify reviews",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 7
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "247fc077-da20-4b4c-b28f-cf30cdff9f28",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "   SELECT id, text FROM reviews\n   WHERE analyzed = false\n   ORDER BY review_date DESC\n   LIMIT 200;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        224,
+        0
+      ],
+      "id": "17caadbf-f377-4dc1-8b85-7905ab4d779a",
+      "name": "Execute a SQL query",
+      "credentials": {
+        "postgres": {
+          "id": "wFyJu4omcBwpDizP",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 10,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        448,
+        0
+      ],
+      "id": "0b599ea5-6b89-4d3b-adeb-973d1590e6eb",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "jsCode": "const ISSUES = [\n  \"Delivery delayed / ETA wrong\", \"Missing or wrong items\",\n  \"Food cold, spilled or poorly packed\", \"Refund not received or rejected\",\n  \"Customer support unhelpful\", \"High platform / delivery fee or surge\",\n  \"Membership issue (Swiggy One / Zomato Gold)\", \"Delivery partner behaviour\",\n  \"Order cancelled after payment\", \"Coupon or offer not applied\",\n  \"App bug (payment failure, crash, login/OTP)\", \"Restaurant food quality\",\n  \"Cash on delivery unavailable\", \"Service not available in area\",\n  \"Location / GPS issue\", \"Language support request\",\n  \"Too many ads or notifications\", \"Scam or unexplained charge\",\n  \"Cancellation fee charged (customer cancelled)\",\n  \"Menu prices higher than restaurant\", \"Offers or discounts reduced\",\n];\n\nconst SYSTEM = `You analyze Indian food-delivery app reviews (Swiggy, Zomato).\nReviews may be in English, Hindi or Hinglish.\nKnown issue labels: ${JSON.stringify(ISSUES)}\n\nReturn a JSON object: {\"results\": [ ...one object per review... ]}\nEach object: {\"n\": <same n>, \"text_en\": \"<English translation>\",\n \"service\": \"food\"|\"instamart\"|\"dineout\"|\"other\", \"is_complaint\": true|false,\n \"issues\": [{\"label\": \"...\", \"category\": \"bug|ux|pricing|delivery|support|restaurant_quality|feature_request\",\n             \"severity\": 1-5, \"is_new\": false}]}\n\nRules:\n- Reuse a known label EXACTLY as written whenever the meaning matches.\n- Only create a new label (is_new: true) for a genuinely different problem; under 8 words.\n- A review can have several issues. Praise-only reviews get \"issues\": [].\n- Complaints about a restaurant's cooking use \"Restaurant food quality\".\n- Severity: 1 = minor annoyance, 5 = lost money or could not use the app.\n- Never create vague labels like \"general dissatisfaction\" or \"poor service\".\n- \"Order cancelled after payment\" is ONLY when the platform or restaurant cancelled.\n  If the customer cancelled and was charged, use \"Cancellation fee charged (customer cancelled)\".\n- Use \"Scam or unexplained charge\" ONLY when no specific cause is given.\n- A concrete suggestion is a feature request: short label, category \"feature_request\", never \"none\".\nReturn ONLY the JSON object.`;\n\nconst batch = $input.all().map((it, i) => ({\n  n: i, id: it.json.id, text: String(it.json.text).slice(0, 800),\n}));\n\nreturn [{\n  json: {\n    ids: batch.map(x => x.id),\n    body: {\n      model: \"openai/gpt-oss-120b\",\n      messages: [\n        { role: \"system\", content: SYSTEM },\n        { role: \"user\", content: JSON.stringify(batch.map(({ n, text }) => ({ n, text }))) },\n      ],\n      response_format: { type: \"json_object\" },\n      temperature: 0,\n    },\n  },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        96
+      ],
+      "id": "f7e59d92-f01c-48b9-a3a2-7505bad02d58",
+      "name": "Build request"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        896,
+        96
+      ],
+      "id": "f9f0cbae-5778-40c3-9845-524d24e13496",
+      "name": "HTTP Request",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "tGaCXpL30IGZ3k6Y",
+          "name": "Groq"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const ids = $('Build request').first().json.ids;\nconst reviews = [];\nconst issues = [];\n\ntry {\n  const content = $input.first().json.choices[0].message.content;\n  for (const r of JSON.parse(content).results) {\n    const id = ids[r.n];\n    if (!id) continue;\n    reviews.push({ id, service: r.service, text_en: r.text_en });\n    for (const iss of (r.issues || [])) {\n      issues.push({ review_id: id, label: iss.label, category: iss.category,\n                    severity: iss.severity, is_new: !!iss.is_new });\n    }\n  }\n} catch (e) {\n  // bad batch: reviews stay analyzed=false and are retried next run\n}\n\nreturn [{ json: { reviews, issues } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        96
+      ],
+      "id": "849cc3d8-c7f7-4fea-8a3c-1ea2f4e92029",
+      "name": "Parse response"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH data AS (SELECT $q${{ JSON.stringify($json) }}$q$::jsonb AS d),\nupd AS (\n  UPDATE reviews r\n  SET service = x.service, text_en = x.text_en, analyzed = true\n  FROM jsonb_to_recordset((SELECT d->'reviews' FROM data))\n       AS x(id text, service text, text_en text)\n  WHERE r.id = x.id\n  RETURNING r.id\n)\nINSERT INTO review_issues (review_id, label, category, severity, is_new)\nSELECT review_id, label, category, severity, is_new\nFROM jsonb_to_recordset((SELECT d->'issues' FROM data))\n     AS y(review_id text, label text, category text, severity int, is_new boolean)\nON CONFLICT DO NOTHING;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1344,
+        96
+      ],
+      "id": "ec932353-d1a5-45b3-9212-174781118cc6",
+      "name": "Save results",
+      "credentials": {
+        "postgres": {
+          "id": "wFyJu4omcBwpDizP",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 20
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1568,
+        96
+      ],
+      "id": "4af38212-ce8d-4030-9469-3d604b1da21d",
+      "name": "Wait",
+      "webhookId": "b02f23f7-5536-4abe-99c0-67232429f5f1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Build request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build request": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Parse response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse response": {
+      "main": [
+        [
+          {
+            "node": "Save results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save results": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "56d9e352-ea88-4995-a303-e51d39bd0275",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "fdf8db9e9f47500720a575d7beac3dd37ca18be1bc773535394268b73a15d089"
+  },
+  "nodeGroups": [],
+  "id": "BE0hXlvZwOej8Q9H",
+  "tags": []
+}

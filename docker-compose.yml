@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: n8n
+      POSTGRES_PASSWORD: n8npass
+      POSTGRES_DB: reviews
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - GENERIC_TIMEZONE=Asia/Kolkata
+      - TZ=Asia/Kolkata
+    volumes:
+      - n8ndata:/home/node/.n8n
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - postgres
+
+  metabase:
+    image: metabase/metabase:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - metabasedata:/metabase-data
+    environment:
+      - MB_DB_FILE=/metabase-data/metabase.db
+      - JAVA_TIMEZONE=Asia/Kolkata
+    depends_on:
+      - postgres
+
+volumes:
+  pgdata:
+  n8ndata:
+  metabasedata:
